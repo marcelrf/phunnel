@@ -1,0 +1,14 @@
+projectPHID: PHID-PROJ-7nmqeeo6pfndicguymjd  # Analytics
+columnPHIDs:
+    #- PHID-PCOL-4rv7bii65xd6wxektaka  # Jupyter
+    #- PHID-PCOL-3sppqpc2tnojn2j6muhn  # Data Quality
+    #- PHID-PCOL-e2qq3t23nms72jwqt7lp  # Mentoring
+    #- PHID-PCOL-btdy5wlrnem72b5dafzo  # Smart Tools for Better Data
+    #- PHID-PCOL-wobo5crhgrxp5smdwswo  # Forgotten documentation
+    - PHID-PCOL-gkmtdmuskyal3m7npm2r  # Wikistats Beta
+    #- PHID-PCOL-qo5trpy4ndztso3cmrl6  # Geowiki
+    #- PHID-PCOL-xvx5owi7wrgu4dxyh7pm  # Kafka Work
+    #- PHID-PCOL-7gpu4qicbrji6acfdksd  # Operational Excellence
+    #- PHID-PCOL-mjr3oprjv3ati3lqux53  # Bots
+    #- PHID-PCOL-ganhiwt4ew3pxrmmdpca  # Modern Event Platform
+    #- PHID-PCOL-manwotcfobaphb7zh7zw  # Backlog (later)

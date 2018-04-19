@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from datetime import datetime, timedelta
+from phabricator import Phabricator
+import yaml
+import sys
+
+
+NEEDS_TRIAGE_PRIORITY = 90
+VERY_LOW_PRIORITY = 10
+PRIORITY_TIMEDELTA = {
+    100: {'time': timedelta(days=7), 'text': '7 DAYS'},
+    80: {'time': timedelta(days=49), 'text': '7 WEEKS'},
+    50: {'time': timedelta(days=210), 'text': '7 MONTHS'},
+    25: {'time': timedelta(days=630), 'text': '7 QUARTERS'},
+}
+PRIORITY_NAMES = {
+    100: {'name': 'UNBREAK NOW', 'code': 'unbreak'},
+    90: {'name': 'NEEDS TRIAGE', 'code': 'triage'},
+    80: {'name': 'HIGH', 'code': 'high'},
+    50: {'name': 'NORMAL', 'code': 'normal'},
+    25: {'name': 'LOW', 'code': 'low'},
+    10: {'name': 'VERY LOW', 'code': 'lowest'}
+}
+
+
+def read_config():
+    with open("config.yaml", 'r') as config_file:
+        return yaml.load(config_file)
+
+def get_column_map(phab, config):
+    column_info = phab.project.column.search(constraints={
+        'projects': [config['projectPHID']]
+    })
+    column_map = {
+        c['phid']: c['fields']['name']
+        for c in column_info['data']
+    }
+    return column_map
+
+def get_task_column(transactions, config):
+    for transaction in transactions:
+        if transaction['transactionType'] == 'core:columns':
+            column_info = transaction['newValue'][0]
+            if column_info['boardPHID'] == config['projectPHID']:
+                return column_info['columnPHID']
+    return None
+
+def get_task_priority(transactions, now):
+    sorted_transactions = sorted(transactions, key=lambda x: -int(x['dateCreated']))
+    priority = 90
+    timestamp_assigned = sorted_transactions[-1]['dateCreated']
+    for transaction in sorted_transactions:
+        if transaction['transactionType'] == 'priority':
+            priority = int(transaction['newValue'])
+            timestamp_assigned = transaction['dateCreated']
+            break
+    date_assigned = datetime.fromtimestamp(int(timestamp_assigned))
+    timedelta_since_assigned = now - date_assigned
+    return [priority, timedelta_since_assigned]
+
+def prompt(task, column, priority):
+    print('')
+    print(task['title'] + ' (' + column + ')')
+    print(task['uri'])
+    if priority == NEEDS_TRIAGE_PRIORITY:
+        print(PRIORITY_NAMES[priority]['name'] + '.')
+    else:
+        print('Was marked as ' + PRIORITY_NAMES[priority]['name'] + ' PRIORITY more than ' +
+            PRIORITY_TIMEDELTA[priority]['text'] + ' ago.')
+    while True:
+        code = raw_input('Select new priority ([u]nbreak now, [h]igh, [n]ormal, [l]ow, [v]ery low, needs [t]riage, [s]kip, e[x]it): ')
+        if code == 'u': return 100
+        elif code == 't': return 90
+        elif code == 'h': return 80
+        elif code == 'n': return 50
+        elif code == 'l': return 25
+        elif code == 'v': return 10
+        elif code == 's':
+            print('Task skipped.')
+            return None
+        elif code == 'x':
+            print('\nBye!')
+            sys.exit()
+
+def assign_new_priority(phab, task_id, old_priority, new_priority):
+    if old_priority != NEEDS_TRIAGE_PRIORITY or new_priority != NEEDS_TRIAGE_PRIORITY:
+        if old_priority == new_priority:
+            phab.maniphest.edit(transactions=[{
+                'type': 'priority',
+                'value': PRIORITY_NAMES[NEEDS_TRIAGE_PRIORITY]['code']
+            }], objectIdentifier=task_id)
+        phab.maniphest.edit(transactions=[{
+            'type': 'priority',
+            'value': PRIORITY_NAMES[new_priority]['code']
+        }], objectIdentifier=task_id)
+    print('Task priority set to ' + PRIORITY_NAMES[new_priority]['name'] + '.')
+
+
+def main():
+    # Initializations.
+    now = datetime.now()
+    phab = Phabricator(timeout=300)
+    phab.update_interfaces()
+    config = read_config()
+    column_map = get_column_map(phab, config)
+
+    # Get all open tasks of the given project.
+    print('Getting project tasks...')
+    project_tasks = phab.maniphest.query(
+        projectPHIDs=[config['projectPHID']],
+        status="status-open"
+    ).values()
+
+    # Get task transactions for the project tasks.
+    print('Getting task transactions...')
+    task_ids = [int(t['id']) for t in project_tasks]
+    transaction_sets = phab.maniphest.gettasktransactions(ids=task_ids).values()
+    tasks_with_transactions = zip(
+        sorted(project_tasks, key=lambda x: x['id']),
+        sorted(transaction_sets, key=lambda x: x[0]['taskID'])
+    )
+
+    # Decorate them with the column they are in.
+    tasks_with_transactions_and_columns = map(
+        lambda (task, tran): [task, tran, get_task_column(tran, config)],
+        tasks_with_transactions
+    )
+
+    # Filter out tasks of invalid columns.
+    selected_tasks_with_transactions_and_columns = filter(
+        lambda x: x[2] in config['columnPHIDs'],
+        tasks_with_transactions_and_columns
+    )
+
+    # Decorate them with their column name and priority.
+    selected_tasks_with_columns_and_priority = map(
+        lambda (task, tran, col): [task, column_map[col], get_task_priority(tran, now)],
+        selected_tasks_with_transactions_and_columns
+    )
+
+    # Filter out tasks that are already updated.
+    outdated_tasks_with_columns_and_priority = filter(
+        lambda (task, col, (priority, timedelta)): (
+            priority != VERY_LOW_PRIORITY and (
+                priority == NEEDS_TRIAGE_PRIORITY or
+                timedelta > PRIORITY_TIMEDELTA[priority]['time']
+            )
+        ),
+        selected_tasks_with_columns_and_priority
+    )
+
+    # Sort by highest priority.
+    outdated_tasks_with_columns_and_priority.sort(
+        key=lambda (task, col, (priority, delta)): -priority
+    )
+
+    # Apply notification logic.
+    for task, column, (priority, timedelta) in outdated_tasks_with_columns_and_priority:
+        new_priority = prompt(task, column, priority)
+        if new_priority is not None:
+            assign_new_priority(phab, int(task['id']), priority, new_priority)
+
+    print('\nDone!')
+
+
+if __name__ == '__main__':
+    main()
