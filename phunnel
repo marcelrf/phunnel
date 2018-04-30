@@ -3,55 +3,91 @@
 
 from datetime import datetime, timedelta
 from phabricator import Phabricator
+import json
+import urllib2
 import yaml
-import sys
 
 
-NEEDS_TRIAGE_PRIORITY = 90
-VERY_LOW_PRIORITY = 10
-PRIORITY_TIMEDELTA = {
-    100: {'time': timedelta(days=7), 'text': '7 DAYS'},
-    80: {'time': timedelta(days=49), 'text': '7 WEEKS'},
-    50: {'time': timedelta(days=210), 'text': '7 MONTHS'},
-    25: {'time': timedelta(days=630), 'text': '7 QUARTERS'},
-}
-PRIORITY_NAMES = {
-    100: {'name': 'UNBREAK NOW', 'code': 'unbreak'},
-    90: {'name': 'NEEDS TRIAGE', 'code': 'triage'},
-    80: {'name': 'HIGH', 'code': 'high'},
-    50: {'name': 'NORMAL', 'code': 'normal'},
-    25: {'name': 'LOW', 'code': 'low'},
-    10: {'name': 'VERY LOW', 'code': 'lowest'}
-}
-
-
-def read_config():
+def read_config(phab):
     with open("config.yaml", 'r') as config_file:
-        return yaml.load(config_file)
+        config = yaml.load(config_file)
+    backlog_conditions = config['backlog']['stallingConditions']
+    kanban_conditions = config['kanban']['stallingConditions']
+    for priority, condition in backlog_conditions.items():
+        backlog_conditions[priority] = parse_stalling_condition(condition)
+    for column, condition in kanban_conditions.items():
+        backlog_conditions[column] = parse_stalling_condition(condition)
+    config['categoryColumns'] = get_category_columns(config['backlog'])
+    config['columnNames'] = get_column_names(phab, config)
+    config['priorities'] = get_priorities(phab)
+    config['users'] = get_user_names(phab, config)
+    return config
 
-def get_column_map(phab, config):
+def parse_stalling_condition(condition):
+    parsed = {}
+    parts = filter(lambda x: x != '', condition.strip().split(' '))
+    count = int(parts[0])
+    unit = parts[1]
+    parsed['count'] = count
+    parsed['unit'] = unit
+    parsed['criteria'] = parts[2]
+    if unit == 'days': days = count
+    elif unit == 'weeks': days = count * 7
+    elif unit == 'months': days = count * 30
+    elif unit == 'quarters': days = count * 90
+    elif unit == 'years': days = count * 365
+    parsed['timedelta'] = timedelta(days=days)
+    return parsed
+
+def get_category_columns(backlog):
+    return backlog['active'] + backlog['inactive'] + [
+        backlog['blocked'],
+        backlog['radar'],
+        backlog['deprioritized']
+    ]
+
+def get_priorities(phab):
+    priority_list = phab.maniphest.priority.search()['data']
+    return {
+        p['value']: p
+        for p in priority_list
+    }
+
+def get_column_names(phab, config):
     column_info = phab.project.column.search(constraints={
-        'projects': [config['projectPHID']]
+        'projects': [
+            config['backlog']['board'],
+            config['kanban']['board']
+        ]
     })
-    column_map = {
+    return {
         c['phid']: c['fields']['name']
         for c in column_info['data']
     }
-    return column_map
 
-def get_task_column(transactions, config):
+def get_user_names(phab, config):
+    user_info = phab.user.search(constraints={'phids': config['users']})
+    return {
+        u['phid']: u['fields']['username']
+        for u in user_info['data']
+    }
+
+def get_task_column(transactions, board, now):
     for transaction in transactions:
         if transaction['transactionType'] == 'core:columns':
             column_info = transaction['newValue'][0]
-            if column_info['boardPHID'] == config['projectPHID']:
-                return column_info['columnPHID']
-    return None
+            if column_info['boardPHID'] == board:
+                column = column_info['columnPHID']
+                timestamp_assigned = transaction['dateCreated']
+                date_assigned = datetime.fromtimestamp(int(timestamp_assigned))
+                timedelta_since_assigned = now - date_assigned
+                return [column, timedelta_since_assigned]
+    return [None, None]
 
 def get_task_priority(transactions, now):
-    sorted_transactions = sorted(transactions, key=lambda x: -int(x['dateCreated']))
     priority = 90
-    timestamp_assigned = sorted_transactions[-1]['dateCreated']
-    for transaction in sorted_transactions:
+    timestamp_assigned = transactions[-1]['dateCreated']
+    for transaction in transactions:
         if transaction['transactionType'] == 'priority':
             priority = int(transaction['newValue'])
             timestamp_assigned = transaction['dateCreated']
@@ -60,109 +96,222 @@ def get_task_priority(transactions, now):
     timedelta_since_assigned = now - date_assigned
     return [priority, timedelta_since_assigned]
 
-def prompt(task, column, priority):
-    print('')
-    print(task['title'] + ' (' + column + ')')
-    print(task['uri'])
-    if priority == NEEDS_TRIAGE_PRIORITY:
-        print(PRIORITY_NAMES[priority]['name'] + '.')
-    else:
-        print('Was marked as ' + PRIORITY_NAMES[priority]['name'] + ' PRIORITY more than ' +
-            PRIORITY_TIMEDELTA[priority]['text'] + ' ago.')
-    while True:
-        code = raw_input('Select new priority ([u]nbreak now, [h]igh, [n]ormal, [l]ow, [v]ery low, needs [t]riage, [s]kip, e[x]it): ')
-        if code == 'u': return 100
-        elif code == 't': return 90
-        elif code == 'h': return 80
-        elif code == 'n': return 50
-        elif code == 'l': return 25
-        elif code == 'v': return 10
-        elif code == 's':
-            print('Task skipped.')
-            return None
-        elif code == 'x':
-            print('\nBye!')
-            sys.exit()
+def get_task_points(transactions):
+    for transaction in transactions:
+        if transaction['transactionType'] == 'points':
+            return transaction['newValue']
+    return None
 
-def assign_new_priority(phab, task_id, old_priority, new_priority):
-    if old_priority != NEEDS_TRIAGE_PRIORITY or new_priority != NEEDS_TRIAGE_PRIORITY:
-        if old_priority == new_priority:
+def get_task_order(task, config):
+    order = 0
+    if 'inKanban' in task:
+        board = config['kanban']
+        column, timedelta = task['kanbanColumn']
+        if column == board['readyToDeploy']: pass
+        elif column == board['inCodeReview']: order += 1000
+        elif column == board['inProgress']: order += 2000
+        elif column == board['paused']: order += 3000
+        elif column == board['parentTasks']: order += 4000
+        elif column == board['nextUp']: order += 5000
+        else: return None
+        order -= timedelta.total_seconds() / 100000
+    elif 'inBacklog' in task:
+        order += 10000
+        board = config['backlog']
+        column, timedelta = task['backlogColumn']
+        if column == board['blocked']: pass
+        elif column in board['active']: order += 1000
+        elif column in board['incoming']: order += 2000
+        else: return None
+        order -= task['priority'][0]
+    return order
+
+def task_has_no_category(task, config):
+    return (
+        'inKanban' not in task and
+        task['backlogColumn'][0] not in config['categoryColumns']
+    )
+
+def assign_category(task, config, phab):
+    print('NEEDS CATEGORY')
+    for i in range(len(config['categoryColumns'])):
+        column = config['categoryColumns'][i]
+        column_name = config['columnNames'][column]
+        print('[%d] %s' % (i + 1, column_name))
+    print('[s] Skip')
+    while True:
+        code = raw_input()
+        try:
+            index = int(code) - 1
+            category = config['categoryColumns'][index]
+        except ValueError, IndexError:
+            if code == 'r': category = config['radar']
+            elif code == 'b': category = config['blocked']
+            elif code == 'd': category = config['deprioritized']
+            elif code == 's':
+                print('-- Task skipped.')
+                return None
+            else:
+                continue
+        if 'dryRun' not in config:
+            phab.maniphest.edit(transactions=[{
+                'type': 'column',
+                'value': category
+            }], objectIdentifier=task['id'])
+        task['backlogColumn'] = [category, timedelta(days=0)]
+        task['inBacklog'] = True
+        print('-- Task assigned to column %s.' % config['columnNames'][category])
+        return task
+
+def task_has_no_priority(task, config):
+    if 'inKanban' in task:
+        return False
+    backlog = config['backlog']
+    excluded_columns = backlog['inactive'] + [
+        backlog['blocked'],
+        backlog['radar'],
+        backlog['deprioritized']
+    ]
+    return (
+        task['priority'][0] is 90 and
+        task['backlogColumn'][0] not in excluded_columns
+    )
+
+def assign_priority(task, config, phab):
+    print('NEEDS TRIAGE')
+    abbreviations = {100: 'u', 90: 't', 80: 'h', 50: 'n', 25: 'l', 10: 'v'}
+    for priority, info in reversed(sorted(config['priorities'].items())):
+        if priority == 90: continue
+        print('[%s] %s' % (abbreviations[priority], info['name']))
+    print('[s] Skip')
+    while True:
+        code = raw_input()
+        if code == 'u': new_priority = 100
+        elif code == 'h': new_priority = 80
+        elif code == 'n': new_priority = 50
+        elif code == 'l': new_priority = 25
+        elif code == 'v': new_priority = 10
+        elif code == 's':
+            print('-- Task skipped.')
+            return None
+        else:
+            continue
+        new_priority_keyword = config['priorities'][new_priority]['keywords'][0]
+        if 'dryRun' not in config:
             phab.maniphest.edit(transactions=[{
                 'type': 'priority',
-                'value': PRIORITY_NAMES[NEEDS_TRIAGE_PRIORITY]['code']
-            }], objectIdentifier=task_id)
-        phab.maniphest.edit(transactions=[{
-            'type': 'priority',
-            'value': PRIORITY_NAMES[new_priority]['code']
-        }], objectIdentifier=task_id)
-    print('Task priority set to ' + PRIORITY_NAMES[new_priority]['name'] + '.')
+                'value': new_priority_keyword
+            }], objectIdentifier=task['id'])
+        task['priority'] = [new_priority, timedelta(days=0)]
+        print('-- Task priority set to %s.' % new_priority_keyword)
+        return task
+
+# # Filter out tasks that are already updated.
+# outdated_tasks_with_columns_and_priority = filter(
+#     lambda (task, col, (priority, timedelta)): (
+#         priority != VERY_LOW_PRIORITY and (
+#             priority == NEEDS_TRIAGE_PRIORITY or
+#             timedelta > PRIORITY_TIMEDELTA[priority]['time']
+#         )
+#     ),
+#     selected_tasks_with_columns_and_priority
+# )
+
+# Possible task conflicts and its associated fixes.
+CONFLICTS = [
+    [task_has_no_category, assign_category],
+    [task_has_no_priority, assign_priority],
+    # [task_in_kanban_has_no_points, assign_points],
+    # [task_in_progress_has_0_points, move_to_parent_tasks],
+    # [task_in_parent_tasks_has_positive_points, move_to_kanban_column],
+    # [non_parent_task_in_progress_has_no_owner, assign_owner],
+    # [task_in_kanban_is_stale, refresh_kanban_task],
+    # [task_in_backlog_is_stale, refresh_backlog_task]
+]
+
+def task_has_conflicts(task, config):
+    for has_conflict, fix in CONFLICTS:
+        if has_conflict(task, config):
+            return fix
+    return None
+
+def print_task_info(task, config):
+    if 'inKanban' in task:
+        board = 'Kanban'
+        column = task['kanbanColumn'][0]
+    elif 'inBacklog' in task:
+        board = 'Backlog'
+        column = task['backlogColumn'][0]
+    print('')
+    print('%s (%s :: %s)' % (task['title'], board, config['columnNames'][column]))
+    print(task['uri'])
+
+def get_joke():
+    joke_api_url = 'http://api.icndb.com/jokes/random?limitTo=[nerdy]&escape=javascript'
+    return json.loads(urllib2.urlopen(joke_api_url).read())['value']['joke']
 
 
 def main():
+    print('Gathering data from Phabricator...')
+    print('In the meantime, you can read this important message from www.icndb.com:')
+    print('"%s"' % get_joke())
+
     # Initializations.
     now = datetime.now()
     phab = Phabricator(timeout=300)
     phab.update_interfaces()
-    config = read_config()
-    column_map = get_column_map(phab, config)
+    config = read_config(phab)
 
-    # Get all open tasks of the given project.
-    print('Getting project tasks...')
-    project_tasks = phab.maniphest.query(
-        projectPHIDs=[config['projectPHID']],
+    # Get all open tasks of the given projects.
+    backlog_tasks = phab.maniphest.query(
+        projectPHIDs=[config['backlog']['board']],
         status="status-open"
-    ).values()
+    )
+    for task in backlog_tasks.values():
+        task['inBacklog'] = True
+    kanban_tasks = phab.maniphest.query(
+        projectPHIDs=[config['kanban']['board']],
+        status="status-open"
+    )
+    for task in kanban_tasks.values():
+        task['inKanban'] = True
+    backlog_tasks.update(kanban_tasks)
+    tasks = backlog_tasks.values()
 
-    # Get task transactions for the project tasks.
-    print('Getting task transactions...')
-    task_ids = [int(t['id']) for t in project_tasks]
+    # Get task transactions for the given tasks.
+    task_ids = [int(t['id']) for t in tasks]
     transaction_sets = phab.maniphest.gettasktransactions(ids=task_ids).values()
-    tasks_with_transactions = zip(
-        sorted(project_tasks, key=lambda x: x['id']),
-        sorted(transaction_sets, key=lambda x: x[0]['taskID'])
-    )
+    transaction_sets.sort(key=lambda x: x[0]['taskID'])
+    tasks.sort(key=lambda x: x['id'])
+    for i in range(len(tasks)):
+        tasks[i]['transactions'] = sorted(
+            transaction_sets[i],
+            key=lambda x: -int(x['dateCreated'])
+        )
 
-    # Decorate them with the column they are in.
-    tasks_with_transactions_and_columns = map(
-        lambda (task, tran): [task, tran, get_task_column(tran, config)],
-        tasks_with_transactions
-    )
+    # Decorate tasks with convenient information.
+    for task in tasks:
+        task['backlogColumn'] = get_task_column(task['transactions'], config['backlog']['board'], now)
+        task['kanbanColumn'] = get_task_column(task['transactions'], config['kanban']['board'], now)
+        task['priority'] = get_task_priority(task['transactions'], now)
+        task['points'] = get_task_points(task['transactions'])
+        task['order'] = get_task_order(task, config)
 
-    # Filter out tasks of invalid columns.
-    selected_tasks_with_transactions_and_columns = filter(
-        lambda x: x[2] in config['columnPHIDs'],
-        tasks_with_transactions_and_columns
-    )
+    # Filter and sort tasks.
+    tasks = filter(lambda x: x['order'] is not None, tasks)
+    tasks.sort(key=lambda x: x['order'])
 
-    # Decorate them with their column name and priority.
-    selected_tasks_with_columns_and_priority = map(
-        lambda (task, tran, col): [task, column_map[col], get_task_priority(tran, now)],
-        selected_tasks_with_transactions_and_columns
-    )
+    # Check for conflicts and apply fixes.
+    for task in tasks:
+        fix = task_has_conflicts(task, config)
+        if fix is not None:
+            print_task_info(task, config)
+        while fix is not None:
+            task = fix(task, config, phab)
+            if task is None: break
+            fix = task_has_conflicts(task, config)
 
-    # Filter out tasks that are already updated.
-    outdated_tasks_with_columns_and_priority = filter(
-        lambda (task, col, (priority, timedelta)): (
-            priority != VERY_LOW_PRIORITY and (
-                priority == NEEDS_TRIAGE_PRIORITY or
-                timedelta > PRIORITY_TIMEDELTA[priority]['time']
-            )
-        ),
-        selected_tasks_with_columns_and_priority
-    )
-
-    # Sort by highest priority.
-    outdated_tasks_with_columns_and_priority.sort(
-        key=lambda (task, col, (priority, delta)): -priority
-    )
-
-    # Apply notification logic.
-    for task, column, (priority, timedelta) in outdated_tasks_with_columns_and_priority:
-        new_priority = prompt(task, column, priority)
-        if new_priority is not None:
-            assign_new_priority(phab, int(task['id']), priority, new_priority)
-
-    print('\nDone!')
+    print('\nDone!\n')
 
 
 if __name__ == '__main__':

@@ -1,14 +1,155 @@
-projectPHID: PHID-PROJ-7nmqeeo6pfndicguymjd  # Analytics
-columnPHIDs:
-    #- PHID-PCOL-4rv7bii65xd6wxektaka  # Jupyter
-    #- PHID-PCOL-3sppqpc2tnojn2j6muhn  # Data Quality
-    #- PHID-PCOL-e2qq3t23nms72jwqt7lp  # Mentoring
-    #- PHID-PCOL-btdy5wlrnem72b5dafzo  # Smart Tools for Better Data
-    #- PHID-PCOL-wobo5crhgrxp5smdwswo  # Forgotten documentation
-    - PHID-PCOL-gkmtdmuskyal3m7npm2r  # Wikistats Beta
-    #- PHID-PCOL-qo5trpy4ndztso3cmrl6  # Geowiki
-    #- PHID-PCOL-xvx5owi7wrgu4dxyh7pm  # Kafka Work
-    #- PHID-PCOL-7gpu4qicbrji6acfdksd  # Operational Excellence
-    #- PHID-PCOL-mjr3oprjv3ati3lqux53  # Bots
-    #- PHID-PCOL-ganhiwt4ew3pxrmmdpca  # Modern Event Platform
-    #- PHID-PCOL-manwotcfobaphb7zh7zw  # Backlog (later)
+backlog:
+    board: PHID-PROJ-7nmqeeo6pfndicguymjd  # Analytics
+    incoming:
+          - PHID-PCOL-hhn7svjs5isgzkbexbia  # Incoming
+          # - PHID-PCOL-manwotcfobaphb7zh7zw  # Backlog (later)
+    active:
+          - PHID-PCOL-7gpu4qicbrji6acfdksd  # Operational Excellence
+          - PHID-PCOL-3sppqpc2tnojn2j6muhn  # Data Quality
+          - PHID-PCOL-xvx5owi7wrgu4dxyh7pm  # Kafka Work
+          - PHID-PCOL-btdy5wlrnem72b5dafzo  # Smart Tools for Better Data
+          - PHID-PCOL-gkmtdmuskyal3m7npm2r  # Wikistats Beta
+          - PHID-PCOL-qo5trpy4ndztso3cmrl6  # Geowiki
+          - PHID-PCOL-4td6qmn32r3vbrjh4xm2  # Pageview API
+    inactive:
+          - PHID-PCOL-e2qq3t23nms72jwqt7lp  # Mentoring
+          - PHID-PCOL-mjr3oprjv3ati3lqux53  # Bots
+          - PHID-PCOL-ganhiwt4ew3pxrmmdpca  # Modern Event Platform
+          - PHID-PCOL-4rv7bii65xd6wxektaka  # Jupyter
+          - PHID-PCOL-twmau77mw5cdimydid5w  # Wikistats Production
+          - PHID-PCOL-7konzxbwmknvinn6adey  # Dashiki
+          - PHID-PCOL-wobo5crhgrxp5smdwswo  # Forgotten documentation
+    radar: PHID-PCOL-in3gnye265b7dswnykvk
+    deprioritized: PHID-PCOL-kxrnbaiiaopxypm5kfi7
+    blocked: PHID-PCOL-q7r5qfcdr4rgbzipnref
+    stallingConditions:
+        unbreak: 7 days static
+        high: 7 weeks static
+        normal: 7 months static
+        low: 7 quarters static
+        lowest: 7 years static
+kanban:
+    board: PHID-PROJ-mseu6whr6z4kqtzmoahl
+    parentTasks: PHID-PCOL-6cwxiegnuggy7scjawko
+    nextUp: PHID-PCOL-gj52fgl7wdrdkoazrt6z
+    paused: PHID-PCOL-zgrbvgurwzhvvh2dkuvp
+    inProgress: PHID-PCOL-hn2ehxlwqk6di6ns7nej
+    inCodeReview: PHID-PCOL-ixaphm56xqgmiavsrc2w
+    readyToDeploy: PHID-PCOL-mau24duehhxrd2p7vcqc
+    stallingConditions:
+        parentTasks: 2 months inactive
+        nextUp: 4 weeks static
+        paused: 6 weeks inactive
+        inProgress: 2 weeks inactive
+        inCodeReview: 2 weeks static
+        readyToDeploy: 2 weeks static
+users:
+    - PHID-USER-a6yycs7vaq2biua4pudd  # elukey
+    - PHID-USER-rn7ojj3xjygpzmo7ekex  # fdans
+    - PHID-USER-g7bfwahewstu6un6ewf6  # jallemandou
+    - PHID-USER-zi2n3djggr2p7i54o5tp  # mforns
+    - PHID-USER-vbyvvtbztxaeuaxelxx4  # milimetric
+    - PHID-USER-mwkkwzbzlkvdl4w2og44  # nuria
+    - PHID-USER-tafngdco2cilcyr7qhhg  # ottomata
+dryRun: true
+
+
+
+
+
+
+
+
+
+
+
+# TODO: List assumptions on backlog and kanban format.
+
+# 1 - All open tasks have to have a category (or be deprioritized or radar or blocked - only backlog)
+# 2 - All open tasks (except in deprioritized|radar|backlog-inactive-columns) have to have a priority
+# 3 - All open kanban tasks not in parent column have to have non-0 points
+# 4 - All open kanban tasks in parent column have to have 0 points
+# 5 - All open kanban tasks outside next up and parent have to have a user assigned
+# 6 - All open kanban tasks column have to have their column revised periodically*
+# 7 - All open backlog tasks not in kanban have to have their priority revised periodically**
+
+# (*) Kanban column revisions:
+#     - done -> never
+#     - ready to deploy | in code review -> after 2 weeks of landing there
+#     - in progress -> after no activity for more than 2 weeks
+#     - paused -> after no activity for more than 6 weeks
+#     - parent tasks -> after no activity for more than 8 weeks
+#     - next up -> after 4 weeks of landing there
+
+# (**) Backlog priority revisions:
+#     - very low -> never
+#     - low -> after 7 quarters of being tagged low
+#     - normal -> after 7 months of being tagged normal
+#     - high -> after 7 weeks of being tagged high
+#     - unbreak now -> after 7 days of being tagged unbreak now
+#     - needs triage -> always
+
+# Iterate tasks 'from right to left', first kanban, then backlog.
+# For each task ensure all axioms from top to bottom.
+# Offer to move tasks just triaged to high or unbreak to the kanban.
+# If a task in kanban is pointed with 0, move it automatically to parent tasks.
+# Whenever we update a task, also update its value in memory so that further axiom checks consider updates.
+
+# ALGORITHM
+# - Get all open tasks for kanban and backlog, and their transactions
+# - decorate tasks with column and priority and points and user
+# - Sort them by best criteria
+# - Check axioms and update tasks
+
+
+# EXAMPLE:
+
+# phunnel // groom everything
+# phunnel kanban // groom all kanban
+# phunnel kanban active // groom all kanban but next up
+# phunnel kanban ready-to-deploy // groom kanban ready to deploy column
+# phunnel kanban in-code-review // groom kanban in code review column
+# phunnel kanban in-progress // groom kanban in progress column
+# phunnel kanban paused // groom kanban paused column
+# phunnel kanban parent-tasks // groom kanban parent tasks column
+# phunnel kanban next-up // groom kanban next up column
+# phunnel backlog // groom all backlog
+# phunnel backlog active // groom backlog active category columns
+# phunnel backlog "Smarter Tools for Better Data" // groom backlog given column
+# phunnel backlog incoming // groom backlog incoming column
+
+# Productionize EventLogging sanitization (Incoming)
+# https://phabricator.wikimedia.org/T193176
+# NEEDS CATEGORY
+# [1] Jupiter
+# [2] Smart Tools for Better Data
+# [3] ...
+# [4] Deprioritized
+# [5] Radar
+# [c] Close as...
+# [s] Skip
+# 2
+# -- Task moved to column Smart Tools for Better Data.
+# NEEDS TRIAGE
+# [u] Unbreak now
+# [h] High
+# [n] Normal
+# [l] Low
+# [v] Very low
+# [t] Needs triage
+# [c] Close as...
+# [s] Skip
+# h
+# -- Task priority set to high.
+# WANT TO MOVE TO KANBAN? (13 tasks in Next Up [y/n])
+# y
+# -- Task moved to Kanban.
+# NEEDS POINTS (use [s] to skip)
+# 13
+# -- Task points set to 13.
+# WANT TO ASSIGN USER?
+# [1] Milimetric
+# [2] mforns
+# [3] ...
+# [s] Skip
+# s
