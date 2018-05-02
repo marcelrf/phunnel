@@ -8,22 +8,24 @@ import urllib2
 import yaml
 
 
+# Methods for reading, parsing and completing configuration.
+
 def read_config(phab):
     with open("config.yaml", 'r') as config_file:
         config = yaml.load(config_file)
-    backlog_conditions = config['backlog']['stallingConditions']
-    kanban_conditions = config['kanban']['stallingConditions']
+    backlog_conditions = config['backlog']['stallConditions']
+    kanban_conditions = config['kanban']['stallConditions']
     for priority, condition in backlog_conditions.items():
-        backlog_conditions[priority] = parse_stalling_condition(condition)
+        backlog_conditions[priority] = parse_stall_condition(condition)
     for column, condition in kanban_conditions.items():
-        backlog_conditions[column] = parse_stalling_condition(condition)
+        kanban_conditions[column] = parse_stall_condition(condition)
     config['categoryColumns'] = get_category_columns(config['backlog'])
     config['columnNames'] = get_column_names(phab, config)
     config['priorities'] = get_priorities(phab)
     config['users'] = get_user_names(phab, config)
     return config
 
-def parse_stalling_condition(condition):
+def parse_stall_condition(condition):
     parsed = {}
     parts = filter(lambda x: x != '', condition.strip().split(' '))
     count = int(parts[0])
@@ -72,8 +74,66 @@ def get_user_names(phab, config):
         for u in user_info['data']
     }
 
-def get_task_column(transactions, board, now):
-    for transaction in transactions:
+
+# Methods to get tasks and decorate them with useful information.
+
+def get_tasks(phab, config, now):
+    # Get project tasks.
+    backlog_tasks = get_board_tasks(phab, config, config['backlog']['board'])
+    backlog_ids = set([t['id'] for t in backlog_tasks])
+    kanban_tasks = get_board_tasks(phab, config, config['kanban']['board'])
+    kanban_ids = set([t['id'] for t in kanban_tasks])
+    # Merge tasks and assign boards.
+    tasks = []
+    for task in backlog_tasks:
+        task['boards'] = set(['backlog'])
+        if task['id'] in kanban_ids:
+            task['boards'].add('kanban')
+        tasks.append(task)
+    for task in kanban_tasks:
+        if task['id'] not in backlog_ids:
+            task['boards'] = set(['kanban'])
+            tasks.append(task)
+    # Append task transactions.
+    task_ids = [int(t['id']) for t in tasks]
+    transaction_sets = phab.maniphest.gettasktransactions(ids=task_ids).values()
+    transaction_sets.sort(key=lambda x: int(x[0]['taskID']))
+    tasks.sort(key=lambda x: x['id'])
+    for i in range(len(tasks)):
+        tasks[i]['transactions'] = sorted(
+            transaction_sets[i],
+            key=lambda x: -int(x['dateCreated'])
+        )
+    # Decorate tasks with convenient information.
+    for task in tasks:
+        task['backlogColumn'] = get_task_column(task, config['backlog']['board'], now, config)
+        task['kanbanColumn'] = get_task_column(task, config['kanban']['board'], now, config)
+        task['priority'] = get_task_priority(task['transactions'], now)
+        task['order'] = get_task_order(task, config)
+    # Filter and sort.
+    tasks = filter(lambda x: x['order'] is not None, tasks)
+    tasks.sort(key=lambda x: x['order'])
+    return tasks
+
+def get_board_tasks(phab, config, board):
+    results = phab.maniphest.search(constraints={
+        'projects': [board],
+        'statuses': ["open"]
+    })
+    tasks = results['data']
+    while results['cursor']['after'] is not None:
+        results = phab.maniphest.search(
+            constraints={
+                'projects': [board],
+                'statuses': ["open"]
+            },
+            after=results['cursor']['after']
+        )
+        tasks.extend(results['data'])
+    return tasks
+
+def get_task_column(task, board, now, config):
+    for transaction in task['transactions']:
         if transaction['transactionType'] == 'core:columns':
             column_info = transaction['newValue'][0]
             if column_info['boardPHID'] == board:
@@ -82,7 +142,13 @@ def get_task_column(transactions, board, now):
                 date_assigned = datetime.fromtimestamp(int(timestamp_assigned))
                 timedelta_since_assigned = now - date_assigned
                 return [column, timedelta_since_assigned]
-    return [None, None]
+    timestamp_created = task['fields']['dateCreated']
+    date_created = datetime.fromtimestamp(int(timestamp_created))
+    timedelta_since_created = now - date_created
+    if 'kanban' in task['boards']:
+        return [config['kanban']['nextUp'], timedelta_since_created]
+    else:
+        return [config['backlog']['incoming'][0], timedelta_since_created]
 
 def get_task_priority(transactions, now):
     priority = 90
@@ -96,15 +162,9 @@ def get_task_priority(transactions, now):
     timedelta_since_assigned = now - date_assigned
     return [priority, timedelta_since_assigned]
 
-def get_task_points(transactions):
-    for transaction in transactions:
-        if transaction['transactionType'] == 'points':
-            return transaction['newValue']
-    return None
-
 def get_task_order(task, config):
     order = 0
-    if 'inKanban' in task:
+    if 'kanban' in task['boards']:
         board = config['kanban']
         column, timedelta = task['kanbanColumn']
         if column == board['readyToDeploy']: pass
@@ -115,7 +175,7 @@ def get_task_order(task, config):
         elif column == board['nextUp']: order += 5000
         else: return None
         order -= timedelta.total_seconds() / 100000
-    elif 'inBacklog' in task:
+    else:
         order += 10000
         board = config['backlog']
         column, timedelta = task['backlogColumn']
@@ -126,9 +186,12 @@ def get_task_order(task, config):
         order -= task['priority'][0]
     return order
 
-def task_has_no_category(task, config):
+
+# Methods to apply the maniphesto to a given task.
+
+def task_needs_category(task, config, now):
     return (
-        'inKanban' not in task and
+        'backlog' in task['boards'] and
         task['backlogColumn'][0] not in config['categoryColumns']
     )
 
@@ -137,17 +200,17 @@ def assign_category(task, config, phab):
     for i in range(len(config['categoryColumns'])):
         column = config['categoryColumns'][i]
         column_name = config['columnNames'][column]
-        print('[%d] %s' % (i + 1, column_name))
-    print('[s] Skip')
+        print('%s[%d] %s' % (' ' if i < 9 else '', i + 1, column_name))
+    print(' [s] Skip')
     while True:
         code = raw_input()
         try:
             index = int(code) - 1
             category = config['categoryColumns'][index]
         except ValueError, IndexError:
-            if code == 'r': category = config['radar']
-            elif code == 'b': category = config['blocked']
-            elif code == 'd': category = config['deprioritized']
+            if code == 'r': category = config['backlog']['radar']
+            elif code == 'b': category = config['backlog']['blocked']
+            elif code == 'd': category = config['backlog']['deprioritized']
             elif code == 's':
                 print('-- Task skipped.')
                 return None
@@ -159,22 +222,15 @@ def assign_category(task, config, phab):
                 'value': category
             }], objectIdentifier=task['id'])
         task['backlogColumn'] = [category, timedelta(days=0)]
-        task['inBacklog'] = True
-        print('-- Task assigned to column %s.' % config['columnNames'][category])
+        task['boards'].add('backlog')
+        print('-- Task assigned to %s.' % config['columnNames'][category])
         return task
 
-def task_has_no_priority(task, config):
-    if 'inKanban' in task:
-        return False
-    backlog = config['backlog']
-    excluded_columns = backlog['inactive'] + [
-        backlog['blocked'],
-        backlog['radar'],
-        backlog['deprioritized']
-    ]
+def task_needs_priority(task, config, now):
     return (
-        task['priority'][0] is 90 and
-        task['backlogColumn'][0] not in excluded_columns
+        'kanban' not in task['boards'] and
+        task['backlogColumn'][0] in config['backlog']['active'] and
+        task['priority'][0] is 90
     )
 
 def assign_priority(task, config, phab):
@@ -182,8 +238,8 @@ def assign_priority(task, config, phab):
     abbreviations = {100: 'u', 90: 't', 80: 'h', 50: 'n', 25: 'l', 10: 'v'}
     for priority, info in reversed(sorted(config['priorities'].items())):
         if priority == 90: continue
-        print('[%s] %s' % (abbreviations[priority], info['name']))
-    print('[s] Skip')
+        print(' [%s] %s' % (abbreviations[priority], info['name']))
+    print(' [s] Skip')
     while True:
         code = raw_input()
         if code == 'u': new_priority = 100
@@ -206,110 +262,285 @@ def assign_priority(task, config, phab):
         print('-- Task priority set to %s.' % new_priority_keyword)
         return task
 
-# # Filter out tasks that are already updated.
-# outdated_tasks_with_columns_and_priority = filter(
-#     lambda (task, col, (priority, timedelta)): (
-#         priority != VERY_LOW_PRIORITY and (
-#             priority == NEEDS_TRIAGE_PRIORITY or
-#             timedelta > PRIORITY_TIMEDELTA[priority]['time']
-#         )
-#     ),
-#     selected_tasks_with_columns_and_priority
-# )
+def task_needs_points(task, config, now):
+    return (
+        'kanban' in task['boards'] and
+        task['fields']['points'] is None
+    )
 
-# Possible task conflicts and its associated fixes.
-CONFLICTS = [
-    [task_has_no_category, assign_category],
-    [task_has_no_priority, assign_priority],
-    # [task_in_kanban_has_no_points, assign_points],
-    # [task_in_progress_has_0_points, move_to_parent_tasks],
-    # [task_in_parent_tasks_has_positive_points, move_to_kanban_column],
-    # [non_parent_task_in_progress_has_no_owner, assign_owner],
-    # [task_in_kanban_is_stale, refresh_kanban_task],
+def assign_points(task, config, phab):
+    print('NEEDS POINTS')
+    print('(positive integer or [s] to skip)')
+    while True:
+        code = raw_input()
+        try:
+            points = int(code)
+            if points < 0:
+                continue
+        except ValueError:
+            if code == 's':
+                print('-- Task skipped.')
+                return None
+            else:
+                continue
+        if 'dryRun' not in config:
+            phab.maniphest.edit(transactions=[{
+                'type': 'points',
+                'value': points
+            }], objectIdentifier=task['id'])
+        task['fields']['points'] = points
+        print('-- Task points set to %d.' % points)
+        return task
+
+def task_needs_owner(task, config, now):
+    return (
+        'kanban' in task['boards'] and
+        task['kanbanColumn'][0] not in [
+            config['kanban']['parentTasks'],
+            config['kanban']['nextUp']
+        ] and
+        task['fields']['ownerPHID'] is None
+    )
+
+def assign_owner(task, config, phab):
+    print('NEEDS OWNER')
+    user_ids = config['users'].keys()
+    for i in range(len(user_ids)):
+        user_id = user_ids[i]
+        user_name = config['users'][user_id]
+        print('%s[%d] %s' % (' ' if i < 9 else '', i + 1, user_name))
+    print(' [s] Skip')
+    while True:
+        code = raw_input()
+        try:
+            index = int(code) - 1
+            owner = user_ids[index]
+        except ValueError, IndexError:
+            if code == 's':
+                print('-- Task skipped.')
+                return None
+            else:
+                continue
+        if 'dryRun' not in config:
+            phab.maniphest.edit(transactions=[{
+                'type': 'owner',
+                'value': owner
+            }], objectIdentifier=task['id'])
+        task['fields']['ownerPHID'] = owner
+        print('-- Task assigned to user %s.' % config['users'][owner])
+        return task
+
+def task_in_kanban_is_stale(task, config, now):
+    if 'kanban' not in task['boards']: return False
+    task_column = task['kanbanColumn'][0]
+    active_columns = ['readyToDeploy', 'inCodeReview',
+        'inProgress', 'paused', 'parentTasks', 'nextUp']
+    kanban_config = config['kanban']
+    condition = None
+    for active_column in active_columns:
+        if task_column == kanban_config[active_column]:
+            condition = kanban_config['stallConditions'][active_column]
+            break
+    if condition is None: return False
+    task['condition'] = condition
+    if condition['criteria'] == 'static':
+        task_timedelta = task['kanbanColumn'][1]
+    elif condition['criteria'] == 'inactive':
+        timestamp_modified = task['fields']['dateModified']
+        date_modified = datetime.fromtimestamp(int(timestamp_modified))
+        task_timedelta = now - date_modified
+    return task_timedelta > condition['timedelta']
+
+def refresh_kanban_task(task, config, phab):
+    print('%s FOR MORE THAN %d %s' % (
+        task['condition']['criteria'].upper(),
+        task['condition']['count'],
+        task['condition']['unit'].upper()
+    ))
+    kanban = config['kanban']
+    names = config['columnNames']
+    print(' [1] %s' % names[kanban['parentTasks']])
+    print(' [2] %s' % names[kanban['nextUp']])
+    print(' [3] %s' % names[kanban['paused']])
+    print(' [4] %s' % names[kanban['inProgress']])
+    print(' [5] %s' % names[kanban['inCodeReview']] )
+    print(' [6] %s' % names[kanban['readyToDeploy']])
+    print(' [7] %s' % names[kanban['done']])
+    print(' [8] Backlog' )
+    print(' [s] Skip')
+    while True:
+        code = raw_input()
+        if code == '1': column = kanban['parentTasks']
+        elif code == '2': column = kanban['nextUp']
+        elif code == '3': column = kanban['paused']
+        elif code == '4': column = kanban['inProgress']
+        elif code == '5': column = kanban['inCodeReview']
+        elif code == '6': column = kanban['readyToDeploy']
+        elif code == '7': column = kanban['done']
+        elif code == '8':
+            incoming = config['backlog']['incoming'][0]
+            if 'dryRun' not in config:
+                phab.maniphest.edit(
+                    transactions=[
+                        {
+                            'type': 'projects.remove',
+                            'value': kanban['board']
+                        }, {
+                            'type': 'column',
+                            'value': incoming
+                        }
+                    ],
+                    objectIdentifier=task['id']
+                )
+            task['boards'] = set(['backlog'])
+            task['kanbanColumn'] = [None, None]
+            task['backlogColumn'] = [incoming, timedelta(days=0)]
+            print('-- Task moved to backlog.')
+            return task
+        elif code == 's':
+            print('-- Task skipped.')
+            return None
+        else:
+            continue
+        if 'dryRun' not in config:
+            phab.maniphest.edit(transactions=[{
+                'type': 'column',
+                'value': column
+            }], objectIdentifier=task['id'])
+        task['kanbanColumn'] = [column, timedelta(days=0)]
+        print('-- Task moved to %s.' % names[column])
+        return task
+
+# def task_in_backlog_is_stale(task, config, now):
+#     if 'kanban' in task['boards']: return False
+#     if task['backlogColumn'][0] not in config['backlog']['active']: return False
+#     condition = None
+#     for active_column in active_columns:
+#         if task['priority'][0] == #####################:
+#             condition = kanban_config['stallConditions'][active_column]
+#             break
+#     if condition is None: return False
+#     task['condition'] = condition
+#     if condition['criteria'] == 'static':
+#         task_timedelta = task['kanbanColumn'][1]
+#     elif condition['criteria'] == 'inactive':
+#         timestamp_modified = task['fields']['dateModified']
+#         date_modified = datetime.fromtimestamp(int(timestamp_modified))
+#         task_timedelta = now - date_modified
+#     return task_timedelta > condition['timedelta']
+
+# def refresh_kanban_task(task, config, phab):
+#     print('%s FOR MORE THAN %d %s' % (
+#         task['condition']['criteria'].upper(),
+#         task['condition']['count'],
+#         task['condition']['unit'].upper()
+#     ))
+#     kanban = config['kanban']
+#     names = config['columnNames']
+#     print(' [1] %s' % names[kanban['parentTasks']])
+#     print(' [2] %s' % names[kanban['nextUp']])
+#     print(' [3] %s' % names[kanban['paused']])
+#     print(' [4] %s' % names[kanban['inProgress']])
+#     print(' [5] %s' % names[kanban['inCodeReview']] )
+#     print(' [6] %s' % names[kanban['readyToDeploy']])
+#     print(' [7] %s' % names[kanban['done']])
+#     print(' [8] Backlog' )
+#     print(' [s] Skip')
+#     while True:
+#         code = raw_input()
+#         if code == '1': column = kanban['parentTasks']
+#         elif code == '2': column = kanban['nextUp']
+#         elif code == '3': column = kanban['paused']
+#         elif code == '4': column = kanban['inProgress']
+#         elif code == '5': column = kanban['inCodeReview']
+#         elif code == '6': column = kanban['readyToDeploy']
+#         elif code == '7': column = kanban['done']
+#         elif code == '8':
+#             incoming = config['backlog']['incoming'][0]
+#             if 'dryRun' not in config:
+#                 phab.maniphest.edit(
+#                     transactions=[
+#                         {
+#                             'type': 'projects.remove',
+#                             'value': kanban['board']
+#                         }, {
+#                             'type': 'column',
+#                             'value': incoming
+#                         }
+#                     ],
+#                     objectIdentifier=task['id']
+#                 )
+#             task['boards'] = set(['backlog'])
+#             task['kanbanColumn'] = [None, None]
+#             task['backlogColumn'] = [incoming, timedelta(days=0)]
+#             print('-- Task moved to backlog.')
+#             return task
+#         elif code == 's':
+#             print('-- Task skipped.')
+#             return None
+#         else:
+#             continue
+#         if 'dryRun' not in config:
+#             phab.maniphest.edit(transactions=[{
+#                 'type': 'column',
+#                 'value': column
+#             }], objectIdentifier=task['id'])
+#         task['kanbanColumn'] = [column, timedelta(days=0)]
+#         print('-- Task moved to %s.' % names[column])
+#         return task
+
+
+# Main methods.
+
+MANIFESTO = [
+    [task_needs_category, assign_category],
+    [task_needs_priority, assign_priority],
+    [task_needs_points, assign_points],
+    [task_needs_owner, assign_owner],
+    [task_in_kanban_is_stale, refresh_kanban_task],
     # [task_in_backlog_is_stale, refresh_backlog_task]
 ]
 
-def task_has_conflicts(task, config):
-    for has_conflict, fix in CONFLICTS:
-        if has_conflict(task, config):
+def task_needs_fix(task, config, now):
+    for needs_fix, fix in MANIFESTO:
+        if needs_fix(task, config, now):
             return fix
     return None
 
 def print_task_info(task, config):
-    if 'inKanban' in task:
-        board = 'Kanban'
-        column = task['kanbanColumn'][0]
-    elif 'inBacklog' in task:
-        board = 'Backlog'
-        column = task['backlogColumn'][0]
     print('')
-    print('%s (%s :: %s)' % (task['title'], board, config['columnNames'][column]))
-    print(task['uri'])
-
-def get_joke():
-    joke_api_url = 'http://api.icndb.com/jokes/random?limitTo=[nerdy]&escape=javascript'
-    return json.loads(urllib2.urlopen(joke_api_url).read())['value']['joke']
+    print(task['fields']['name'])
+    print('%sT%d' % (config['phabricatorUrl'], task['id']))
+    if 'kanban' in task['boards']:
+        print('<Kanban :: %s>' % config['columnNames'][task['kanbanColumn'][0]])
+    else:
+        print('<Backlog :: %s>' % config['columnNames'][task['backlogColumn'][0]])
 
 
 def main():
-    print('Gathering data from Phabricator...')
+    # Offer something to read while waiting.
+    joke_api_url = 'http://api.icndb.com/jokes/random?limitTo=[nerdy]&escape=javascript'
+    joke = json.loads(urllib2.urlopen(joke_api_url).read())['value']['joke']
+    print('-- Gathering data from Phabricator...')
     print('In the meantime, you can read this important message from www.icndb.com:')
-    print('"%s"' % get_joke())
+    print('"%s"' % joke)
 
     # Initializations.
     now = datetime.now()
     phab = Phabricator(timeout=300)
     phab.update_interfaces()
     config = read_config(phab)
+    tasks = get_tasks(phab, config, now)
 
-    # Get all open tasks of the given projects.
-    backlog_tasks = phab.maniphest.query(
-        projectPHIDs=[config['backlog']['board']],
-        status="status-open"
-    )
-    for task in backlog_tasks.values():
-        task['inBacklog'] = True
-    kanban_tasks = phab.maniphest.query(
-        projectPHIDs=[config['kanban']['board']],
-        status="status-open"
-    )
-    for task in kanban_tasks.values():
-        task['inKanban'] = True
-    backlog_tasks.update(kanban_tasks)
-    tasks = backlog_tasks.values()
-
-    # Get task transactions for the given tasks.
-    task_ids = [int(t['id']) for t in tasks]
-    transaction_sets = phab.maniphest.gettasktransactions(ids=task_ids).values()
-    transaction_sets.sort(key=lambda x: x[0]['taskID'])
-    tasks.sort(key=lambda x: x['id'])
-    for i in range(len(tasks)):
-        tasks[i]['transactions'] = sorted(
-            transaction_sets[i],
-            key=lambda x: -int(x['dateCreated'])
-        )
-
-    # Decorate tasks with convenient information.
+    # Apply maniphesto.
     for task in tasks:
-        task['backlogColumn'] = get_task_column(task['transactions'], config['backlog']['board'], now)
-        task['kanbanColumn'] = get_task_column(task['transactions'], config['kanban']['board'], now)
-        task['priority'] = get_task_priority(task['transactions'], now)
-        task['points'] = get_task_points(task['transactions'])
-        task['order'] = get_task_order(task, config)
-
-    # Filter and sort tasks.
-    tasks = filter(lambda x: x['order'] is not None, tasks)
-    tasks.sort(key=lambda x: x['order'])
-
-    # Check for conflicts and apply fixes.
-    for task in tasks:
-        fix = task_has_conflicts(task, config)
+        fix = task_needs_fix(task, config, now)
         if fix is not None:
             print_task_info(task, config)
         while fix is not None:
             task = fix(task, config, phab)
             if task is None: break
-            fix = task_has_conflicts(task, config)
+            fix = task_needs_fix(task, config, now)
 
     print('\nDone!\n')
 

@@ -22,7 +22,7 @@ backlog:
     radar: PHID-PCOL-in3gnye265b7dswnykvk
     deprioritized: PHID-PCOL-kxrnbaiiaopxypm5kfi7
     blocked: PHID-PCOL-q7r5qfcdr4rgbzipnref
-    stallingConditions:
+    stallConditions:
         unbreak: 7 days static
         high: 7 weeks static
         normal: 7 months static
@@ -36,7 +36,8 @@ kanban:
     inProgress: PHID-PCOL-hn2ehxlwqk6di6ns7nej
     inCodeReview: PHID-PCOL-ixaphm56xqgmiavsrc2w
     readyToDeploy: PHID-PCOL-mau24duehhxrd2p7vcqc
-    stallingConditions:
+    done: PHID-PCOL-wfre77j5pabc4hedon6j
+    stallConditions:
         parentTasks: 2 months inactive
         nextUp: 4 weeks static
         paused: 6 weeks inactive
@@ -51,6 +52,7 @@ users:
     - PHID-USER-vbyvvtbztxaeuaxelxx4  # milimetric
     - PHID-USER-mwkkwzbzlkvdl4w2og44  # nuria
     - PHID-USER-tafngdco2cilcyr7qhhg  # ottomata
+phabricatorUrl: https://phabricator.wikimedia.org/
 dryRun: true
 
 
@@ -60,50 +62,31 @@ dryRun: true
 
 
 
+# MANIFESTO:
+
+# 1 - All backlog tasks need to be in a category column (active, inactive, radar, blocked, deprioritized).
+# 2 - Backlog tasks in active columns need to have a priority.
+# 3 - All kanban tasks need to have points.
+# 4 - All kanban tasks except nextUp and parentTasks need to have an owner.
+# 5 - There can not be stale* tasks in kanban.
+# 6 - There can not be stale** tasks in backlog.
+
+# (*) When are kanban tasks stale?
+#     - Tasks in the done column can not be stale.
+#     - For the rest of columns, see config.
+
+# (**) When are backlog tasks stale?
+#     - Tasks outside active columns can not be stale.
+#     - Active-column tasks that are also in kanban can not be stale.
+#     - Backlog-only active-column tasks that need triage are always considered stale.
+#     - For backlog-only active-column tasks with other priorities, see config.
+
+# Phunnel, be nice and...
+# - If a backlog-only task is triaged to high or unbreak, offer to move it to kanban.
 
 
 
-# TODO: List assumptions on backlog and kanban format.
-
-# 1 - All open tasks have to have a category (or be deprioritized or radar or blocked - only backlog)
-# 2 - All open tasks (except in deprioritized|radar|backlog-inactive-columns) have to have a priority
-# 3 - All open kanban tasks not in parent column have to have non-0 points
-# 4 - All open kanban tasks in parent column have to have 0 points
-# 5 - All open kanban tasks outside next up and parent have to have a user assigned
-# 6 - All open kanban tasks column have to have their column revised periodically*
-# 7 - All open backlog tasks not in kanban have to have their priority revised periodically**
-
-# (*) Kanban column revisions:
-#     - done -> never
-#     - ready to deploy | in code review -> after 2 weeks of landing there
-#     - in progress -> after no activity for more than 2 weeks
-#     - paused -> after no activity for more than 6 weeks
-#     - parent tasks -> after no activity for more than 8 weeks
-#     - next up -> after 4 weeks of landing there
-
-# (**) Backlog priority revisions:
-#     - very low -> never
-#     - low -> after 7 quarters of being tagged low
-#     - normal -> after 7 months of being tagged normal
-#     - high -> after 7 weeks of being tagged high
-#     - unbreak now -> after 7 days of being tagged unbreak now
-#     - needs triage -> always
-
-# Iterate tasks 'from right to left', first kanban, then backlog.
-# For each task ensure all axioms from top to bottom.
-# Offer to move tasks just triaged to high or unbreak to the kanban.
-# If a task in kanban is pointed with 0, move it automatically to parent tasks.
-# Whenever we update a task, also update its value in memory so that further axiom checks consider updates.
-
-# ALGORITHM
-# - Get all open tasks for kanban and backlog, and their transactions
-# - decorate tasks with column and priority and points and user
-# - Sort them by best criteria
-# - Check axioms and update tasks
-
-
-# EXAMPLE:
-
+# USE:
 # phunnel // groom everything
 # phunnel kanban // groom all kanban
 # phunnel kanban active // groom all kanban but next up
@@ -116,40 +99,4 @@ dryRun: true
 # phunnel backlog // groom all backlog
 # phunnel backlog active // groom backlog active category columns
 # phunnel backlog "Smarter Tools for Better Data" // groom backlog given column
-# phunnel backlog incoming // groom backlog incoming column
-
-# Productionize EventLogging sanitization (Incoming)
-# https://phabricator.wikimedia.org/T193176
-# NEEDS CATEGORY
-# [1] Jupiter
-# [2] Smart Tools for Better Data
-# [3] ...
-# [4] Deprioritized
-# [5] Radar
-# [c] Close as...
-# [s] Skip
-# 2
-# -- Task moved to column Smart Tools for Better Data.
-# NEEDS TRIAGE
-# [u] Unbreak now
-# [h] High
-# [n] Normal
-# [l] Low
-# [v] Very low
-# [t] Needs triage
-# [c] Close as...
-# [s] Skip
-# h
-# -- Task priority set to high.
-# WANT TO MOVE TO KANBAN? (13 tasks in Next Up [y/n])
-# y
-# -- Task moved to Kanban.
-# NEEDS POINTS (use [s] to skip)
-# 13
-# -- Task points set to 13.
-# WANT TO ASSIGN USER?
-# [1] Milimetric
-# [2] mforns
-# [3] ...
-# [s] Skip
-# s
+# phunnel backlog incoming // groom backlog incoming column(s)
