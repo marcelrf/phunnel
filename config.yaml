@@ -1,3 +1,4 @@
+phabricatorUrl: https://phabricator.wikimedia.org/
 backlog:
     board: PHID-PROJ-7nmqeeo6pfndicguymjd  # Analytics
     incoming:
@@ -52,51 +53,4 @@ users:
     - PHID-USER-vbyvvtbztxaeuaxelxx4  # milimetric
     - PHID-USER-mwkkwzbzlkvdl4w2og44  # nuria
     - PHID-USER-tafngdco2cilcyr7qhhg  # ottomata
-phabricatorUrl: https://phabricator.wikimedia.org/
 dryRun: true
-
-
-
-
-
-
-
-
-# MANIFESTO:
-
-# 1 - All backlog tasks need to be in a category column (active, inactive, radar, blocked, deprioritized).
-# 2 - Backlog tasks in active columns need to have a priority.
-# 3 - All kanban tasks need to have points.
-# 4 - All kanban tasks except nextUp and parentTasks need to have an owner.
-# 5 - There can not be stale* tasks in kanban.
-# 6 - There can not be stale** tasks in backlog.
-
-# (*) When are kanban tasks stale?
-#     - Tasks in the done column can not be stale.
-#     - For the rest of columns, see config.
-
-# (**) When are backlog tasks stale?
-#     - Tasks outside active columns can not be stale.
-#     - Active-column tasks that are also in kanban can not be stale.
-#     - Backlog-only active-column tasks that need triage are always considered stale.
-#     - For backlog-only active-column tasks with other priorities, see config.
-
-# Phunnel, be nice and...
-# - If a backlog-only task is triaged to high or unbreak, offer to move it to kanban.
-
-
-
-# USE:
-# phunnel // groom everything
-# phunnel kanban // groom all kanban
-# phunnel kanban active // groom all kanban but next up
-# phunnel kanban ready-to-deploy // groom kanban ready to deploy column
-# phunnel kanban in-code-review // groom kanban in code review column
-# phunnel kanban in-progress // groom kanban in progress column
-# phunnel kanban paused // groom kanban paused column
-# phunnel kanban parent-tasks // groom kanban parent tasks column
-# phunnel kanban next-up // groom kanban next up column
-# phunnel backlog // groom all backlog
-# phunnel backlog active // groom backlog active category columns
-# phunnel backlog "Smarter Tools for Better Data" // groom backlog given column
-# phunnel backlog incoming // groom backlog incoming column(s)
