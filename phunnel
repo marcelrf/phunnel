@@ -1,37 +1,40 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# PHUNNEL MANIFESTO:
+"""
+Usage:
+    phunnel (-h | --help)
+    phunnel [--dry-run] [--board=<board>]
 
+Options:
+    -h --help         Show this help message and exit.
+    --dry-run         Specified modifications are not really applied.
+    --board=<board>   Grooms the specified board only.
+"""
+
+# PHUNNEL MANIFESTO:
 # 1 - All backlog tasks need to be in a category column (active, inactive, radar, blocked, deprioritized).
 # 2 - Backlog tasks in active columns need to have a priority.
 # 3 - All kanban tasks need to have points.
 # 4 - All kanban tasks except nextUp and parentTasks need to have an owner.
 # 5 - There can not be stale* tasks in kanban.
 # 6 - There can not be stale** tasks in backlog.
-
 # (*) When are kanban tasks stale?
 #     - Tasks in the done column can not be stale.
 #     - For the rest of columns, see config.
-
 # (**) When are backlog tasks stale?
 #     - Tasks outside active columns can not be stale.
 #     - Active-column tasks that are also in kanban can not be stale.
 #     - Backlog-only active-column tasks that need triage are always considered stale.
 #     - For backlog-only active-column tasks with other priorities, see config.
-
 # Extra
 # - If a backlog-only task is triaged to high or unbreak, offer to move it to kanban.
 # - If a kanban next-up task is pointed, offer to assign a user.
 # - If a kanban next-up task is assigned a user, offer to move to a kanban column.
 
-# USE:
-# phunnel
-# phunnel backlog
-# phunnel kanban
-
 
 from datetime import datetime, timedelta
+from docopt import docopt
 from phabricator import Phabricator
 import json
 import sys
@@ -255,7 +258,7 @@ def assign_category(task, config, phab):
         if 'dryRun' not in config:
             phab.maniphest.edit(transactions=[{
                 'type': 'column',
-                'value': category
+                'value': [category]
             }], objectIdentifier=task['id'])
         task['backlogColumn'] = [category, timedelta(days=0)]
         task['boards'].add('backlog')
@@ -308,7 +311,7 @@ def assign_priority(task, config, phab, text='NEEDS TRIAGE'):
         #             if 'dryRun' not in config:
         #                 phab.maniphest.edit(transactions=[{
         #                     'type': 'column',
-        #                     'value': next_up
+        #                     'value': [next_up]
         #                 }], objectIdentifier=task['id'])
         #             task['boards'].add('kanban')
         #             task['kanbanColumn'] = [next_up, timedelta(days=0)]
@@ -448,10 +451,10 @@ def refresh_kanban_task(task, config, phab, text=None, show_backlog=True):
                     transactions=[
                         {
                             'type': 'projects.remove',
-                            'value': kanban['board']
+                            'value': [kanban['board']]
                         }, {
                             'type': 'column',
-                            'value': incoming
+                            'value': [incoming]
                         }
                     ],
                     objectIdentifier=task['id']
@@ -470,7 +473,7 @@ def refresh_kanban_task(task, config, phab, text=None, show_backlog=True):
         if 'dryRun' not in config:
             phab.maniphest.edit(transactions=[{
                 'type': 'column',
-                'value': column
+                'value': [column]
             }], objectIdentifier=task['id'])
         task['kanbanColumn'] = [column, timedelta(days=0)]
         print('-- Task moved to %s.' % names[column])
@@ -528,6 +531,7 @@ def print_task_info(task, config):
 
 
 def main():
+
     # Offer something to read while waiting.
     joke_api_url = 'http://api.icndb.com/jokes/random?limitTo=[nerdy]&escape=javascript'
     joke = json.loads(urllib2.urlopen(joke_api_url).read())['value']['joke']
@@ -536,15 +540,13 @@ def main():
     print('"%s"' % joke)
 
     # Initializations.
-    try:
-        only_board = sys.argv[1]
-    except IndexError:
-        only_board = None
+    arguments = docopt(__doc__)
     now = datetime.now()
     phab = Phabricator(timeout=300)
     phab.update_interfaces()
     config = read_config(phab)
-    tasks = get_tasks(phab, config, now, only_board)
+    if arguments['--dry-run']: config['dryRun'] = True
+    tasks = get_tasks(phab, config, now, arguments['--board'])
 
     # Apply maniphesto.
     for task in tasks:
