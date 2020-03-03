@@ -46,7 +46,7 @@ import yaml
 
 def read_config(phab):
     with open("config.yaml", 'r') as config_file:
-        config = yaml.load(config_file)
+        config = yaml.safe_load(config_file)
     backlog_conditions = config['backlog']['stallConditions']
     kanban_conditions = config['kanban']['stallConditions']
     for priority, condition in backlog_conditions.items():
@@ -292,6 +292,11 @@ def assign_priority(task, config, phab, text='NEEDS TRIAGE'):
         else: continue
         new_priority_keyword = config['priorities'][new_priority]['keywords'][0]
         if 'dryRun' not in config:
+            if task['priority'][0] == new_priority:
+                phab.maniphest.edit(transactions=[{
+                    'type': 'priority',
+                    'value': 'triage'
+                }], objectIdentifier=task['id'])
             phab.maniphest.edit(transactions=[{
                 'type': 'priority',
                 'value': new_priority_keyword
